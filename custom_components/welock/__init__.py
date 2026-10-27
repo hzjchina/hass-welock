@@ -81,7 +81,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: WelockConfigEntry) -> bo
     device_registry = dr.async_get(hass)
 
     # Cleanup device registry
-    await cleanup_device_registry(hass, res_mgr)
+    await cleanup_device_registry(hass, entry.entry_id, res_mgr)
 
     for device in res_mgr.device_map.values():
         device_registry.async_get_or_create(
@@ -101,14 +101,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: WelockConfigEntry) -> bo
     return True
 
 
-async def cleanup_device_registry(hass: HomeAssistant, res_mgr: Resmanager) -> None:
+async def cleanup_device_registry(
+    hass: HomeAssistant, config_entry_id: str, res_mgr: Resmanager
+) -> None:
     """Remove deleted device registry entry if there are no remaining entities."""
     device_registry = dr.async_get(hass)
-    for dev_id, device_entry in list(device_registry.devices.items()):
+    for device_entry in dr.async_entries_for_config_entry(
+        device_registry, config_entry_id
+    ):
         for item in device_entry.identifiers:
             if item[0] == DOMAIN and item[1] not in res_mgr.device_map:
                 # if item[0] == DOMAIN:
-                device_registry.async_remove_device(dev_id)
+                device_registry.async_remove_device(device_entry.id)
                 break
 
 
