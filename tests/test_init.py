@@ -249,3 +249,32 @@ def test_parse_relay_message() -> None:
     assert upd.activities[0].kind == "relay_action"
     assert upd.activities[0].method is None
     assert parse_push_message({"foo": 1}) is None
+
+
+async def test_own_unlock_confirmation_not_shown_twice(
+    hass: HomeAssistant, init_integration, mock_api
+) -> None:
+    """A late WIFIBOX push after our own unlock must not unlock again."""
+    lock_id = _eid(hass, "lock", "welock.LOCK1_LockOperation")
+    await hass.services.async_call(
+        "lock", "unlock", {"entity_id": lock_id}, blocking=True
+    )
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=9))
+    await hass.async_block_till_done()
+    assert hass.states.get(lock_id).state == "locked"
+
+    wifibox = {
+        "number": "LOCK1",
+        "status": [{"type": "Unlock", "unlockType": 17, "userId": "WL_X"}],
+    }
+    init_integration.runtime_data._handle_push(wifibox)
+    await hass.async_block_till_done()
+    assert hass.states.get(lock_id).state == "locked"
+    # still recorded as activity
+    record = hass.states.get(_eid(hass, "sensor", "welock.LOCK1_Record"))
+    assert record.state == "wifibox"
+
+    # a second WIFIBOX unlock (e.g. from the WeLock app) is shown again
+    init_integration.runtime_data._handle_push(wifibox)
+    await hass.async_block_till_done()
+    assert hass.states.get(lock_id).state == "unlocked"

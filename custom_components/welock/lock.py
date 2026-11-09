@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from homeassistant.components.lock import LockEntity, LockEntityDescription
@@ -22,6 +23,11 @@ from .coordinator import WeLockConfigEntry, WeLockCoordinator
 from .entity import WeLockEntity, async_setup_device_entities
 
 PARALLEL_UPDATES = 1
+
+# unlockType reported when the lock was opened through the WIFIBOX (= by HA)
+METHOD_WIFIBOX = 17
+# A WIFIBOX confirmation arriving this long after our own command belongs to it
+OWN_COMMAND_WINDOW = 30
 
 LOCK_DESCRIPTION = LockEntityDescription(key=KEY_LOCK, name=None)
 
@@ -61,6 +67,7 @@ class WeLockLock(WeLockEntity, LockEntity):
         self._relock_delay = relock_delay
         self._attr_is_locked = True
         self._cancel_relock: CALLBACK_TYPE | None = None
+        self._last_command: float | None = None
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to activities."""
@@ -74,8 +81,18 @@ class WeLockLock(WeLockEntity, LockEntity):
 
     @callback
     def _on_activity(self, activity: WeLockActivity) -> None:
-        if activity.kind == EVENT_UNLOCK:
-            self._set_unlocked()
+        if activity.kind != EVENT_UNLOCK:
+            return
+        if (
+            activity.method_id == METHOD_WIFIBOX
+            and self._last_command is not None
+            and time.monotonic() - self._last_command < OWN_COMMAND_WINDOW
+        ):
+            # Confirmation of our own unlock (arrives a few seconds late and
+            # not always) - already shown, don't show "unlocked" a second time.
+            self._last_command = None
+            return
+        self._set_unlocked()
 
     @callback
     def _cancel_timer(self) -> None:
@@ -120,6 +137,7 @@ class WeLockLock(WeLockEntity, LockEntity):
                 translation_key="unlock_failed",
                 translation_placeholders={"error": str(err)},
             ) from err
+        self._last_command = time.monotonic()
         self._set_unlocked()
 
     async def async_lock(self, **kwargs: Any) -> None:
