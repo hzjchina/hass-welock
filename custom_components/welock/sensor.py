@@ -1,7 +1,11 @@
-"""."""
+"""WeLock sensors."""
 
-from welock_iot.const import SENSOR_BATTERY_KEY, SENSOR_RECORD_KEY
-from welock_iot.models import DeviceType, WeLockDevice
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -9,107 +13,156 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import PERCENTAGE, EntityCategory
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import StateType
+from homeassistant.const import (
+    PERCENTAGE,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
+    EntityCategory,
+)
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.util import dt as dt_util
 
-from . import WelockConfigEntry
-from .const import WELOCK_DEVICE_DISCOVER
-from .entity import WeLockEntity
+from .api import DeviceType, WeLockActivity, WeLockDevice
+from .const import (
+    EVENT_RELAY,
+    EVENT_UNLOCK,
+    KEY_BATTERY,
+    KEY_LAST_ACTIVITY,
+    KEY_RECORD,
+    UNLOCK_METHODS,
+)
+from .coordinator import WeLockConfigEntry
+from .entity import WeLockEntity, async_setup_device_entities
 
-SENSORS: dict[str, tuple[SensorEntityDescription, ...]] = {
-    DeviceType.WELOCK.name: (
-        SensorEntityDescription(
-            key=SENSOR_BATTERY_KEY,
-            translation_key="battery",
-            native_unit_of_measurement=PERCENTAGE,
-            device_class=SensorDeviceClass.BATTERY,
-            state_class=SensorStateClass.MEASUREMENT,
-            entity_category=EntityCategory.DIAGNOSTIC,
-            icon="mdi:battery-60",
-            has_entity_name=True,
-        ),
-        SensorEntityDescription(
-            key=SENSOR_RECORD_KEY,
-            translation_key="record",
-            icon="mdi:history",
-            has_entity_name=True,
-        ),
+PARALLEL_UPDATES = 0
+
+METHOD_OPTIONS = sorted({*UNLOCK_METHODS.values(), "relay", "other"})
+
+
+def _record_value(device: WeLockDevice) -> str | None:
+    act = device.last_activity
+    if act is None:
+        return None
+    if act.kind == EVENT_RELAY and act.method in (None, "other"):
+        return "relay"
+    return act.method or "other"
+
+
+def _record_attrs(device: WeLockDevice) -> dict[str, Any] | None:
+    act = device.last_activity
+    if act is None:
+        return None
+    return {**act.as_dict(), "event": act.kind}
+
+
+@dataclass(frozen=True, kw_only=True)
+class WeLockSensorDescription(SensorEntityDescription):
+    """Sensor description with value getter."""
+
+    value_fn: Callable[[WeLockDevice], Any]
+    attrs_fn: Callable[[WeLockDevice], dict[str, Any] | None] = lambda _: None
+    device_types: tuple[DeviceType, ...]
+
+
+SENSORS: tuple[WeLockSensorDescription, ...] = (
+    WeLockSensorDescription(
+        key=KEY_BATTERY,
+        translation_key="battery",
+        native_unit_of_measurement=PERCENTAGE,
+        device_class=SensorDeviceClass.BATTERY,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: d.battery,
+        device_types=(DeviceType.LOCK, DeviceType.DOOR_SENSOR),
     ),
-    DeviceType.DOORS.name: (
-        SensorEntityDescription(
-            key=SENSOR_BATTERY_KEY,
-            translation_key="battery",
-            native_unit_of_measurement=PERCENTAGE,
-            device_class=SensorDeviceClass.BATTERY,
-            state_class=SensorStateClass.MEASUREMENT,
-            entity_category=EntityCategory.DIAGNOSTIC,
-            icon="mdi:battery-60",
-            has_entity_name=True,
-        ),
+    WeLockSensorDescription(
+        key=KEY_RECORD,
+        translation_key="record",
+        device_class=SensorDeviceClass.ENUM,
+        options=METHOD_OPTIONS,
+        value_fn=_record_value,
+        attrs_fn=_record_attrs,
+        device_types=(DeviceType.LOCK, DeviceType.WIFIBOX3),
     ),
-    DeviceType.WIFIBOX3.name: (
-        SensorEntityDescription(
-            key=SENSOR_RECORD_KEY,
-            translation_key="record",
-            icon="mdi:history",
-            has_entity_name=True,
-        ),
+    WeLockSensorDescription(
+        key=KEY_LAST_ACTIVITY,
+        translation_key="last_activity",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda d: d.last_activity.time if d.last_activity else None,
+        attrs_fn=lambda d: {"user": d.last_activity.who} if d.last_activity else None,
+        device_types=(DeviceType.LOCK, DeviceType.WIFIBOX3),
     ),
-}
+)
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: WelockConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: WeLockConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the config entry."""
+    """Set up WeLock sensors."""
+    coordinator = entry.runtime_data
 
-    hass_data = entry.runtime_data
-
-    @callback
-    def async_discover_device(device_list: list[str]) -> None:
-        """Discover and add welock sensor."""
-        entities: list[BatteryEntity] = []
-        for device_id in device_list:
-            device = hass_data.manager.device_map[device_id]
-            if descriptions := SENSORS.get(device.device_type.name):
-                entities.extend(
-                    BatteryEntity(device, description) for description in descriptions
-                )
-
-        async_add_entities(entities)
+    def _factory(device: WeLockDevice) -> list[SensorEntity]:
+        entities: list[SensorEntity] = []
+        for desc in SENSORS:
+            if device.device_type not in desc.device_types:
+                continue
+            cls = WeLockRecordSensor if desc.key == KEY_RECORD else WeLockSensor
+            entities.append(cls(coordinator, device.device_id, desc))
+        return entities
 
     entry.async_on_unload(
-        async_dispatcher_connect(hass, WELOCK_DEVICE_DISCOVER, async_discover_device)
+        async_setup_device_entities(coordinator, async_add_entities, _factory)
     )
-    async_discover_device([*hass_data.manager.device_map])
 
 
-class BatteryEntity(WeLockEntity, SensorEntity):
-    """BatteryEntity or RecordEntity."""
+class WeLockSensor(WeLockEntity, SensorEntity):
+    """Generic WeLock sensor."""
 
-    def __init__(
-        self, device: WeLockDevice, description: SensorEntityDescription
-    ) -> None:
-        """Init ."""
-        super().__init__(device)
-        self.entity_description = description
-        self._attr_unique_id = f"{super().unique_id}_{description.key}"
+    entity_description: WeLockSensorDescription
 
     @property
-    def native_value(self) -> StateType:
-        """Return the value reported by the sensor."""
+    def native_value(self) -> Any:
+        """Return the state."""
+        return self.entity_description.value_fn(self.device)
 
-        key = self.entity_description.key
-        if key == SENSOR_BATTERY_KEY:
-            return self.device.status.get(
-                key, None if self.device.battery == 0 else self.device.battery
-            )
-        if key == SENSOR_RECORD_KEY:
-            return self.device.status.get(key)
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return extra attributes."""
+        return self.entity_description.attrs_fn(self.device)
 
-        return None
+
+class WeLockRecordSensor(WeLockSensor, RestoreEntity):
+    """Last activity; restored after restart so it isn't 'unknown'."""
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last activity."""
+        await super().async_added_to_hass()
+        if self.device.last_activity is not None:
+            return
+        last = await self.async_get_last_state()
+        if last is None or last.state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+            return
+        attrs = last.attributes
+        if "event" not in attrs:  # state from v1.x (free text) - not restorable
+            return
+        time: datetime | None = (
+            dt_util.parse_datetime(attrs["time"]) if attrs.get("time") else None
+        )
+        method = last.state if last.state != "relay" else None
+        self.device.last_activity = WeLockActivity(
+            kind=attrs.get("event", EVENT_UNLOCK),
+            method=method,
+            method_id=attrs.get("method_id"),
+            user_id=attrs.get("user_id"),
+            user_name=attrs.get("user")
+            if attrs.get("user") != attrs.get("user_id")
+            else None,
+            time=time,
+            result=None,
+        )
+        # let the timestamp sensor & lock attributes pick it up
+        self.coordinator.async_update_listeners()

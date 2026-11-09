@@ -1,97 +1,149 @@
-"""."""
+"""WeLock lock entity."""
 
-import asyncio
+from __future__ import annotations
+
+import time
 from typing import Any
 
-from welock_iot.const import LOCK_WELOCK_KEY
-from welock_iot.manager import Resmanager
-from welock_iot.models import DeviceType, WeLockDevice
-
 from homeassistant.components.lock import LockEntity, LockEntityDescription
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.event import async_call_later
 
-from . import WelockConfigEntry
-from .const import WELOCK_DEVICE_DISCOVER
-from .entity import WeLockEntity
+from .api import DeviceType, WeLockActivity, WeLockDevice, WeLockError
+from .const import (
+    CONF_RELOCK_DELAY,
+    DEFAULT_RELOCK_DELAY,
+    DOMAIN,
+    EVENT_UNLOCK,
+    KEY_LOCK,
+)
+from .coordinator import WeLockConfigEntry, WeLockCoordinator
+from .entity import WeLockEntity, async_setup_device_entities
 
-LOCKS: dict[str, tuple[LockEntityDescription, ...]] = {
-    DeviceType.WELOCK.name: (
-        LockEntityDescription(
-            key=LOCK_WELOCK_KEY,
-            translation_key="welocks",
-            has_entity_name=True,
-            # icon="mdi:lock-open-variant-outline",
-        ),
-    )
-}
+PARALLEL_UPDATES = 1
+
+# unlockType reported when the lock was opened through the WIFIBOX (= by HA)
+METHOD_WIFIBOX = 17
+# A WIFIBOX confirmation arriving this long after our own command belongs to it
+OWN_COMMAND_WINDOW = 30
+
+LOCK_DESCRIPTION = LockEntityDescription(key=KEY_LOCK, name=None)
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: WelockConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: WeLockConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up lock entry."""
-    hass_data = entry.runtime_data
+    """Set up WeLock locks."""
+    coordinator = entry.runtime_data
+    relock = int(entry.options.get(CONF_RELOCK_DELAY, DEFAULT_RELOCK_DELAY))
 
-    @callback
-    def async_discover_device(device_list: list[str]) -> None:
-        """Discover and add a lock."""
-        entities: list[UserLockEntity] = []
-        for device_id in device_list:
-            device = hass_data.manager.device_map[device_id]
-            if descriptions := LOCKS.get(device.device_type.name):
-                entities.extend(
-                    UserLockEntity(device, description, hass_data.manager)
-                    for description in descriptions
-                )
-
-        async_add_entities(entities)
+    def _factory(device: WeLockDevice) -> list[WeLockLock]:
+        if device.device_type is DeviceType.LOCK:
+            return [WeLockLock(coordinator, device.device_id, relock)]
+        return []
 
     entry.async_on_unload(
-        async_dispatcher_connect(hass, WELOCK_DEVICE_DISCOVER, async_discover_device)
+        async_setup_device_entities(coordinator, async_add_entities, _factory)
     )
-    async_discover_device([*hass_data.manager.device_map])
 
 
-class UserLockEntity(WeLockEntity, LockEntity):
-    """WeLock Lock entity."""
+class WeLockLock(WeLockEntity, LockEntity):
+    """A WeLock smart lock.
+
+    WeLock locks relock automatically, so the cloud only offers "unlock".
+    The entity shows "unlocked" for the configured relock delay after an
+    unlock (from HA or reported via push by the lock itself).
+    """
 
     def __init__(
-        self,
-        device: WeLockDevice,
-        description: LockEntityDescription,
-        res_manager: Resmanager,
+        self, coordinator: WeLockCoordinator, device_id: str, relock_delay: int
     ) -> None:
-        """Init lock."""
-        super().__init__(device)
-        self.entity_description = description
-        self._attr_unique_id = f"{super().unique_id}_{description.key}"
+        """Init."""
+        super().__init__(coordinator, device_id, LOCK_DESCRIPTION)
+        self._relock_delay = relock_delay
         self._attr_is_locked = True
-        self.res_manager = res_manager
+        self._cancel_relock: CALLBACK_TYPE | None = None
+        self._last_command: float | None = None
 
-    async def async_lock(self, **kwargs: Any) -> None:
-        """Lock all or specified locks. A code to lock the lock with may optionally be specified."""
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to activities."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self.coordinator.async_add_activity_listener(
+                self._device_id, self._on_activity
+            )
+        )
+        self.async_on_remove(self._cancel_timer)
+
+    @callback
+    def _on_activity(self, activity: WeLockActivity) -> None:
+        if activity.kind != EVENT_UNLOCK:
+            return
+        if (
+            activity.method_id == METHOD_WIFIBOX
+            and self._last_command is not None
+            and time.monotonic() - self._last_command < OWN_COMMAND_WINDOW
+        ):
+            # Confirmation of our own unlock (arrives a few seconds late and
+            # not always) - already shown, don't show "unlocked" a second time.
+            self._last_command = None
+            return
+        self._set_unlocked()
+
+    @callback
+    def _cancel_timer(self) -> None:
+        if self._cancel_relock:
+            self._cancel_relock()
+            self._cancel_relock = None
+
+    @callback
+    def _set_unlocked(self) -> None:
+        self._cancel_timer()
+        self._attr_is_unlocking = False
+        self._attr_is_locked = False
+        self.async_write_ha_state()
+        self._cancel_relock = async_call_later(
+            self.hass, self._relock_delay, self._relocked
+        )
+
+    @callback
+    def _relocked(self, _now: Any) -> None:
+        self._cancel_relock = None
+        self._attr_is_locked = True
+        self.async_write_ha_state()
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Expose the last activity."""
+        if (act := self.device.last_activity) is None:
+            return None
+        return {f"last_{k}": v for k, v in act.as_dict().items()}
 
     async def async_unlock(self, **kwargs: Any) -> None:
-        """Unlock all or specified locks. A code to unlock the lock with may optionally be specified."""
-
-        state = await self.res_manager.unlock(self.device)
-        if state:
-            self._attr_is_locked = False
-            self._attr_is_unlocking = True
-        else:
+        """Unlock via the WeLock gateway."""
+        self._attr_is_unlocking = True
+        self.async_write_ha_state()
+        try:
+            await self.coordinator.api.async_unlock(self.device)
+        except WeLockError as err:
             self._attr_is_unlocking = False
-            self._attr_is_locked = True
-        self.async_write_ha_state()
-        if state:
-            await self._handle_auto_lock()
+            self.async_write_ha_state()
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="unlock_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+        self._last_command = time.monotonic()
+        self._set_unlocked()
 
-    async def _handle_auto_lock(self):
-        """Handle auto lock the lock delay 8seonds."""
-        await asyncio.sleep(8)
-        self._attr_is_unlocking = False
-        self._attr_is_locked = True
-        self.async_write_ha_state()
+    async def async_lock(self, **kwargs: Any) -> None:
+        """WeLock locks relock by themselves."""
+        if self.is_locked:
+            return
+        raise ServiceValidationError(
+            translation_domain=DOMAIN, translation_key="lock_not_supported"
+        )

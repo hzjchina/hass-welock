@@ -1,14 +1,14 @@
 {
   "domain": "welock",
   "name": "WeLock",
-  "codeowners": [
-    "@hzjchina"
-  ],
+  "codeowners": ["@hzjchina"],
   "config_flow": true,
   "dependencies": ["application_credentials"],
   "documentation": "https://github.com/hzjchina/hass-welock",
+  "integration_type": "hub",
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/hzjchina/hass-welock/issues",
-  "requirements": ["welock-iot==0.0.2"],
-  "version": "1.0.1"
+  "loggers": ["custom_components.welock", "aiomqtt"],
+  "requirements": ["aiomqtt>=2.0.0,<3.0.0"],
+  "version": "2.0.1"
 }
