@@ -1,72 +1,54 @@
-"""."""
+"""WeLock WIFIBOX3 remote button."""
 
-from welock_iot.const import BUTTON_WIFIBOX_KEY
-from welock_iot.manager import Resmanager
-from welock_iot.models import DeviceType, WeLockDevice
+from __future__ import annotations
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
-from . import WelockConfigEntry
-from .const import WELOCK_DEVICE_DISCOVER
-from .entity import WeLockEntity
+from .api import DeviceType, WeLockDevice, WeLockError
+from .const import DOMAIN, KEY_REMOTE
+from .coordinator import WeLockConfigEntry
+from .entity import WeLockEntity, async_setup_device_entities
 
-BUTTONS: dict[str, tuple[ButtonEntityDescription, ...]] = {
-    DeviceType.WIFIBOX3.name: (
-        ButtonEntityDescription(
-            key=BUTTON_WIFIBOX_KEY, 
-			translation_key="button", 
-			has_entity_name=True
-        ),
-    )
-}
+PARALLEL_UPDATES = 1
+
+REMOTE_DESCRIPTION = ButtonEntityDescription(
+    key=KEY_REMOTE, translation_key="remote_control"
+)
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: WelockConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    entry: WeLockConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up all the buttons for the config entry."""
-    hass_data = entry.runtime_data
+    """Set up WeLock buttons."""
+    coordinator = entry.runtime_data
 
-    @callback
-    def async_discover_device(device_list: list[str]) -> None:
-        """Discover and add a button."""
-        entities: list[WeLockButtonEntity] = []
-        for device_id in device_list:
-            device = hass_data.manager.device_map[device_id]
-            if descriptions := BUTTONS.get(device.device_type.name):
-                entities.extend(
-                    WeLockButtonEntity(device, description, hass_data.manager)
-                    for description in descriptions
-                )
-
-        async_add_entities(entities)
+    def _factory(device: WeLockDevice) -> list[WeLockRemoteButton]:
+        if device.device_type is DeviceType.WIFIBOX3:
+            return [
+                WeLockRemoteButton(coordinator, device.device_id, REMOTE_DESCRIPTION)
+            ]
+        return []
 
     entry.async_on_unload(
-        async_dispatcher_connect(hass, WELOCK_DEVICE_DISCOVER, async_discover_device)
+        async_setup_device_entities(coordinator, async_add_entities, _factory)
     )
-    async_discover_device([*hass_data.manager.device_map])
 
 
-class WeLockButtonEntity(WeLockEntity, ButtonEntity):
-    """For the wifibox3 button."""
-
-    def __init__(
-        self,
-        device: WeLockDevice,
-        description: ButtonEntityDescription,
-        res_manager: Resmanager,
-    ) -> None:
-        """Init WeLock button like wifibox3 remote control."""
-        super().__init__(device)
-        self.entity_description = description
-        self._attr_unique_id = f"{super().unique_id}_{description.key}"
-        self.res_manager = res_manager
+class WeLockRemoteButton(WeLockEntity, ButtonEntity):
+    """Triggers the WIFIBOX3 relay / remote control."""
 
     async def async_press(self) -> None:
-        """Handle the button press."""
-        await self.res_manager.remote_control(self.device)
+        """Press the button."""
+        try:
+            await self.coordinator.api.async_trigger(self.device)
+        except WeLockError as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="command_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err

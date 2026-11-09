@@ -1,2 +1,3 @@
 config/*
 custom_components/welock/__pycache__
+.ruff_cache/

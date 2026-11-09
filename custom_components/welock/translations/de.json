@@ -1,58 +1,148 @@
 {
-    "config": {
-      "abort": {
-        "already_configured": "Dieses Konto ist bereits konfiguriert.",
-        "already_in_progress": "Konfiguration läuft bereits.",
-        "authorize_url_timeout": "Zeitüberschreitung beim Generieren der Autorisierungs-URL.",
-        "missing_configuration": "Client-ID oder -Geheimnis fehlt in der Konfiguration. Bitte beachten Sie die Dokumentation.",
-        "no_url_available": "Keine URL verfügbar. Informationen zu diesem Fehler finden Sie in der Hilfe ({docs_url})",
-        "oauth_error": "Ungültige Tokendaten empfangen.",
-        "oauth_failed": "OAuth2-Authentifizierung fehlgeschlagen.",
-        "oauth_timeout": "Zeitüberschreitung beim Auflösen des OAuth-Tokens.",
-        "oauth_unauthorized": "OAuth-Autorisierungsfehler beim Abrufen des Zugriffstokens.",
-        "reauth_successful": "Erneute Authentifizierung erfolgreich."
-      },
-      "create_entry": {
-        "default": "Erfolgreich authentifiziert"
-      },
-      "step": {
-        "pick_implementation": {
-          "title": "Authentifizierungsmethode auswählen"
-        },
-        "reauth_confirm": {
-          "title": "Erneute Authentifizierung erforderlich",
-          "description": "Bitte authentifizieren Sie Ihr welock-Konto erneut."
-        }
-      }
+  "application_credentials": {
+    "description": "Die **Client-ID** und das **Client-Secret** findest du in der WeLock-App im linken Menü unter dem Home-Assistant-Symbol ({app_hint})."
+  },
+  "config": {
+    "abort": {
+      "already_configured": "Das Konto ist bereits eingerichtet",
+      "already_in_progress": "Die Einrichtung läuft bereits",
+      "authorize_url_timeout": "Zeitüberschreitung beim Erzeugen der Autorisierungs-URL.",
+      "missing_configuration": "Keine Anmeldedaten hinterlegt. Bitte zuerst Client-ID und Client-Secret aus der WeLock-App eintragen.",
+      "no_url_available": "Keine URL verfügbar.",
+      "oauth_error": "Ungültige Token-Daten empfangen.",
+      "oauth_failed": "Fehler beim Abrufen des Zugriffstokens.",
+      "oauth_timeout": "Zeitüberschreitung beim Abrufen des Zugriffstokens.",
+      "oauth_unauthorized": "OAuth-Autorisierung fehlgeschlagen.",
+      "reauth_successful": "Erneute Anmeldung erfolgreich",
+      "user_rejected_authorize": "Die Autorisierung wurde abgelehnt."
     },
-    "entity": {
-      "button": {
-        "button": {
-          "name": "Button"
-        }
+    "create_entry": {
+      "default": "Erfolgreich angemeldet"
+    },
+    "step": {
+      "pick_implementation": {
+        "title": "Anmeldemethode wählen"
       },
-      "binary_sensor": {
-        "sensor_open": {
-          "name": "Status"
-        }
-      },
-      "sensor": {
-        "battery": {
-          "name": "Batterie"
+      "reauth_confirm": {
+        "title": "Erneut anmelden",
+        "description": "Bitte melde dich erneut bei deinem WeLock-Konto an."
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "WeLock-Optionen",
+        "data": {
+          "relock_delay": "Automatische Verriegelung nach"
         },
-        "record": {
-          "name": "Record"
-        }
-      },
-      "lock": {
-        "welocks": {
-          "name": "Operation"
-        }
-      },
-      "switch": {
-        "switch": {
-          "name": "Schalter"
+        "data_description": {
+          "relock_delay": "Wie lange das Schloss nach dem Öffnen als „entriegelt“ angezeigt wird (Sekunden)."
         }
       }
     }
+  },
+  "entity": {
+    "button": {
+      "remote_control": {
+        "name": "Fernsteuerung auslösen"
+      }
+    },
+    "binary_sensor": {
+      "door": {
+        "name": "Tür"
+      }
+    },
+    "sensor": {
+      "battery": {
+        "name": "Batterie"
+      },
+      "record": {
+        "name": "Letzte Öffnung",
+        "state": {
+          "fingerprint": "Fingerabdruck",
+          "passcode": "PIN-Code",
+          "card": "Karte",
+          "bt_remote": "Bluetooth-Fernbedienung",
+          "remote_433": "433-MHz-Fernbedienung",
+          "app": "App",
+          "temporary_passcode": "Temporärer Code",
+          "face": "Gesichtserkennung",
+          "nfc": "NFC",
+          "wifibox": "WIFIBOX / Home Assistant",
+          "vacation": "Urlaubsmodus",
+          "local": "Manuell (innen)",
+          "relay": "Relais",
+          "other": "Sonstiges"
+        },
+        "state_attributes": {
+          "method": {
+            "name": "Methode"
+          },
+          "user": {
+            "name": "Benutzer"
+          },
+          "user_id": {
+            "name": "Benutzer-ID"
+          },
+          "time": {
+            "name": "Zeit"
+          },
+          "method_id": {
+            "name": "Methoden-ID"
+          },
+          "event": {
+            "name": "Ereignis"
+          }
+        }
+      },
+      "last_activity": {
+        "name": "Letzte Aktivität",
+        "state_attributes": {
+          "user": {
+            "name": "Benutzer"
+          }
+        }
+      }
+    },
+    "event": {
+      "activity": {
+        "name": "Aktivität",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "unlock": "Entriegelt",
+              "relay_action": "Relais ausgelöst"
+            }
+          },
+          "method": {
+            "name": "Methode"
+          },
+          "user": {
+            "name": "Benutzer"
+          },
+          "user_id": {
+            "name": "Benutzer-ID"
+          },
+          "time": {
+            "name": "Zeit"
+          },
+          "method_id": {
+            "name": "Methoden-ID"
+          }
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "unlock_failed": {
+      "message": "Entriegeln fehlgeschlagen: {error}"
+    },
+    "command_failed": {
+      "message": "Befehl fehlgeschlagen: {error}"
+    },
+    "lock_not_supported": {
+      "message": "WeLock-Schlösser verriegeln automatisch – ein Verriegeln über Home Assistant ist nicht möglich."
+    }
+  }
 }
